@@ -305,7 +305,11 @@ class ClusterForm(with_metaclass(ClusterFormMetaclass, ModelForm)):
         # save_m2m() - for this reason, we only proceed with the customisation described above
         # (i.e. postpone the instance.save() operation until after save_m2m) if there's a
         # _need_commit_after_assignment field on the form that demands it.
-
+        
+        # HACK
+        if not instance.id:
+            instance.save()
+        
         if save_m2m_now:
             self.save_m2m()
 
