@@ -3,15 +3,11 @@ from __future__ import unicode_literals
 import django
 from django.core import checks
 from django.db import IntegrityError, router
+from django.db.models import CASCADE
 from django.db.models.fields.related import ForeignKey, ManyToManyField
 from django.utils.functional import cached_property
 
-try:
-    from django.db.models.fields.related import ReverseManyToOneDescriptor, ManyToManyDescriptor
-except ImportError:
-    # Django 1.8 and below
-    from django.db.models.fields.related import ForeignRelatedObjectsDescriptor as ReverseManyToOneDescriptor, \
-        ReverseManyRelatedObjectsDescriptor as ManyToManyDescriptor
+from django.db.models.fields.related import ReverseManyToOneDescriptor, ManyToManyDescriptor
 
 
 from modelcluster.utils import sort_by_fields
@@ -71,6 +67,11 @@ def create_deferring_foreign_related_manager(related, original_manager_cls):
 
             return FakeQuerySet(related.related_model, results)
 
+        def _apply_rel_filters(self, queryset):
+            # Implemented as empty for compatibility sake
+            # But there is probably a better implementation of this function
+            return queryset._next_is_sticky()
+
         def get_prefetch_queryset(self, instances, queryset=None):
             if queryset is None:
                 db = self._db or router.db_for_read(self.model, instance=instances[0])
@@ -88,7 +89,10 @@ def create_deferring_foreign_related_manager(related, original_manager_cls):
                 instance = instances_dict[rel_obj_attr(rel_obj)]
                 setattr(rel_obj, rel_field.name, instance)
             cache_name = rel_field.related_query_name()
-            return qs, rel_obj_attr, instance_attr, False, cache_name
+            if django.VERSION >= (2, 0):
+                return qs, rel_obj_attr, instance_attr, False, cache_name, False
+            else:
+                return qs, rel_obj_attr, instance_attr, False, cache_name
 
         def get_object_list(self):
             """
@@ -228,22 +232,15 @@ class ChildObjectsDescriptor(ReverseManyToOneDescriptor):
 
     @cached_property
     def child_object_manager_cls(self):
-        try:
-            rel = self.rel
-        except AttributeError:
-            # Django 1.8 and below
-            rel = self.related
-
-        return create_deferring_foreign_related_manager(rel, self.related_manager_cls)
+        return create_deferring_foreign_related_manager(self.rel, self.related_manager_cls)
 
 
 class ParentalKey(ForeignKey):
     related_accessor_class = ChildObjectsDescriptor
 
-    # Django 1.8 has a check to prevent unsaved instances being assigned to
-    # ForeignKeys. Disable it
-    # This check was moved to the save() method in Django 1.8.4
-    allow_unsaved_instance_assignment = True
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault('on_delete', CASCADE)
+        super(ParentalKey, self).__init__(*args, **kwargs)
 
     def check(self, **kwargs):
         from modelcluster.models import ClusterableModel
@@ -254,12 +251,12 @@ class ParentalKey(ForeignKey):
         # If self.rel.to is a string at this point, it means that Django has been unable
         # to resolve it as a model name; if so, skip this test so that Django's own
         # system checks can report the appropriate error
-        if isinstance(self.rel.to, type) and not issubclass(self.rel.to, ClusterableModel):
+        if isinstance(self.remote_field.model, type) and not issubclass(self.remote_field.model, ClusterableModel):
             errors.append(
                 checks.Error(
                     'ParentalKey must point to a subclass of ClusterableModel.',
                     hint='Change {model_name} into a ClusterableModel or use a ForeignKey instead.'.format(
-                        model_name=self.rel.to._meta.app_label + '.' + self.rel.to.__name__,
+                        model_name=self.remote_field.model._meta.app_label + '.' + self.remote_field.model.__name__,
                     ),
                     obj=self,
                     id='modelcluster.E001',
@@ -267,7 +264,7 @@ class ParentalKey(ForeignKey):
             )
 
         # ParentalKeys must have an accessor name (#49)
-        if self.rel.get_accessor_name() == '+':
+        if self.remote_field.get_accessor_name() == '+':
             errors.append(
                 checks.Error(
                     "related_name='+' is not allowed on ParentalKey fields",
@@ -479,12 +476,7 @@ class ParentalManyToManyField(ManyToManyField):
         # So, we'll let the original contribute_to_class do its thing, and then overwrite
         # the accessor...
         super(ParentalManyToManyField, self).contribute_to_class(cls, name, **kwargs)
-
-        if django.VERSION >= (1, 9):
-            setattr(cls, self.name, self.related_accessor_class(self.rel))
-        else:
-            # in Django 1.8, the accessor is constructed with the field (self) rather than the 'rel'
-            setattr(cls, self.name, self.related_accessor_class(self))
+        setattr(cls, self.name, self.related_accessor_class(self.remote_field))
 
     def value_from_object(self, obj):
         # In Django >=1.10, ManyToManyField.value_from_object special-cases objects with no PK,

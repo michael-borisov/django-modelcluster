@@ -1,6 +1,17 @@
 Changelog
 =========
 
+4.1 (12.02.2017)
+~~~~~~~~~~~~~~~~
+* `on_delete` on ParentalKey now defaults to CASCADE if not specified
+
+4.0 (13.12.2017)
+~~~~~~~~~~~~~~~~
+* Django 2.0 compatibility
+* Removed Django 1.8 and 1.9 support
+* Child formsets now validate uniqueness constraints
+* Fix: Many-to-many relations inside inline formsets are now saved correctly
+
 3.1 (07.04.2017)
 ~~~~~~~~~~~~~~~~
 * Django 1.11 compatibility
